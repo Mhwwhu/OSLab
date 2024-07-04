@@ -137,6 +137,48 @@ atoi(const char* s)
 	return n;
 }
 
+uint64
+atol(const char* s)
+{
+	uint64 n;
+	int radix;
+
+	n = 0;
+	radix = 10;
+	if (strlen(s) > 2)
+	{
+		if (s[0] == '0' && s[1] == 'x')
+		{
+			radix = 16;
+			s += 2;
+		}
+		else if (s[0] == '0' && s[1] == 'b')
+		{
+			radix = 2;
+			s += 2;
+		}
+	}
+	if (radix == 10) {
+		while ('0' <= *s && *s <= '9')
+			n = n * radix + *s++ - '0';
+	}
+	else if (radix == 2)
+	{
+		while ('0' <= *s && *s <= '1')
+			n = n * radix + *s++ - '0';
+	}
+	else if (radix == 16)
+	{
+		while (('0' <= *s && *s <= '9') || ('a' <= *s && *s <= 'f') || ('A' <= *s && *s <= 'F'))
+		{
+			if ('0' <= *s && *s <= '9') n = n * radix + *s++ - '0';
+			else if ('a' <= *s && *s <= 'f') n = n * radix + *s++ - 'a' + 10;
+			else n = n * radix + *s++ - 'A' + 10;
+		}
+	}
+	return n;
+}
+
 void*
 memmove(void* vdst, const void* vsrc, int n)
 {
