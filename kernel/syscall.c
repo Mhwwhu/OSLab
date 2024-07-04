@@ -102,6 +102,8 @@ extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_procnum(void);
+extern uint64 sys_khalloctest(void);
+extern uint64 sys_khfreetest(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -128,6 +130,8 @@ static uint64(*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_procnum] sys_procnum,
+[SYS_khalloctest] sys_khalloctest,
+[SYS_khfreetest] sys_khfreetest,
 };
 
 void

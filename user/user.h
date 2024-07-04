@@ -23,6 +23,8 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 int procnum(void);
+void* khalloctest(int);
+void khfreetest(void*);
 
 // ulib.c
 int stat(const char*, struct stat*);
@@ -38,5 +40,6 @@ void* memset(void*, int, uint);
 void* malloc(uint);
 void free(void*);
 int atoi(const char*);
+uint64 atol(const char*);
 int memcmp(const void*, const void*, uint);
 void* memcpy(void*, const void*, uint);
