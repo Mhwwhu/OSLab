@@ -102,7 +102,7 @@ sys_khalloctest(void)
 	int nbytes;
 	argint(0, &nbytes);
 	void* ret = khalloctest(nbytes);
-	printFreeBlock();
+	printBlocks();
 	return (uint64)ret;
 }
 
@@ -112,6 +112,7 @@ sys_khfreetest(void)
 	uint64 pa;
 	argaddr(0, &pa);
 	khfreetest((void*)pa);
-	printFreeBlock();
+	printBlocks();
+	printf("***\n");
 	return 0;
 }

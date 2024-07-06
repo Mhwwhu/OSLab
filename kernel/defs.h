@@ -1,3 +1,4 @@
+#include "types.h"
 struct buf;
 struct context;
 struct file;
@@ -112,7 +113,7 @@ void            procdump(void);
 int             procnum(void);
 void* khalloctest(uint);
 void khfreetest(void*);
-void printFreeBlock(void);
+void printBlocks(void);
 
 
 // swtch.S
