@@ -113,6 +113,5 @@ sys_khfreetest(void)
 	argaddr(0, &pa);
 	khfreetest((void*)pa);
 	printBlocks();
-	printf("***\n");
 	return 0;
 }

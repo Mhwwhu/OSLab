@@ -126,7 +126,7 @@ printBlocks()
 extern void print_tree(Rbtree*, Rbnode*);
 
 // 1：首次适应 2：循环首次适应 3：最佳适应 4：最坏适应
-#define MODE 1
+#define MODE 3
 
 struct blockNode {
 	struct blockNode* next;
@@ -273,6 +273,192 @@ khalloc(uint nbytes)
 		// 如果申请的空间正好等于当前块大小，则将对应节点is_free设置为0
 		if (nd->size == nbytes) {
 			nd->is_free = 0;
+			find_node(&tree_size, tree_size.root, nd)->is_free = 0;
+			void* ret = OFFTOADDR(nd->addr);
+			release(&treelock);
+			return ret;
+		}
+	}
+	// 理论上不执行
+	return 0;
+}
+
+
+#elif MODE == 2
+// 循环首次适应
+Rbnode* last;
+void*
+khalloc(uint nbytes)
+{
+	if (nbytes == 0) return 0;
+	acquire(&treelock);
+	Rbnode* min = getmin(&tree_addr, tree_addr.root);
+	// 初始化last
+	if (last == 0) last = min;
+	int flag = 0;
+	for (Rbnode* nd = last;; nd = step(&tree_addr, nd)) {
+		// 如果当前节点为nil，说明遍历到最右端，将nd置为min
+		if (nd == tree_addr.nil) {
+			nd = min;
+			flag = 1;
+		}
+		// nd遍历一圈回到了last，分配失败
+		if (flag && nd == last) {
+			release(&treelock);
+			return 0;
+		}
+		if (!nd->is_free) continue;
+		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
+		if (nd->size > nbytes) {
+			Rbnode* nd_size = (Rbnode*)remove_node(&tree_size, find_node(&tree_size, tree_size.root, nd));
+			nd_size->size -= nbytes;
+			insert_node(&tree_size, nd_size);
+			nd->size -= nbytes;
+
+			// 插入新增的已分配块节点
+			void* node_addr_addr = blkalloc();
+			void* node_addr_size = blkalloc();
+			// 如果获取不到新的节点地址，则尝试申请更多页
+			if (!node_addr_addr || !node_addr_size) {
+				initpage(kalloc());
+				node_addr_addr = blkalloc();
+				node_addr_size = blkalloc();
+				// 如果获取不到新的页，则分配失败
+				if (!node_addr_addr || !node_addr_size) {
+					release(&treelock);
+					return 0;
+				}
+			}
+			void* ret = OFFTOADDR(nd->addr) + nd->size;
+			Rbnode* newNode_addr = init_node(&tree_addr, node_addr_addr, ret, nbytes, 0);
+			Rbnode* newNode_size = init_node(&tree_size, node_addr_size, ret, nbytes, 0);
+			insert_node(&tree_addr, newNode_addr);
+			insert_node(&tree_size, newNode_size);
+			last = newNode_addr;
+			release(&treelock);
+			return ret;
+		}
+		// 如果申请的空间正好等于当前块大小，则将对应节点is_free设置为0
+		if (nd->size == nbytes) {
+			nd->is_free = 0;
+			find_node(&tree_size, tree_size.root, nd)->is_free = 0;
+			void* ret = OFFTOADDR(nd->addr);
+			last = nd;
+			release(&treelock);
+			return ret;
+		}
+	}
+	// 理论上不执行
+	return 0;
+}
+
+#elif MODE == 3
+// 最佳适应
+void*
+khalloc(uint nbytes)
+{
+	if (nbytes == 0) return 0;
+	acquire(&treelock);
+	Rbnode* min = getmin(&tree_size, tree_size.root);
+	for (Rbnode* nd = min;; nd = step(&tree_size, nd)) {
+		// 如果当前节点为nil，说明没有可分配的块，分配失败
+		if (nd == tree_size.nil) {
+			release(&treelock);
+			return 0;
+		}
+		if (!nd->is_free) continue;
+		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
+		if (nd->size > nbytes) {
+			nd = remove_node(&tree_size, nd);
+			nd->size -= nbytes;
+
+			insert_node(&tree_size, nd);
+			find_node(&tree_addr, tree_addr.root, nd)->size -= nbytes;
+
+			// 插入新增的已分配块节点
+			void* node_addr_addr = blkalloc();
+			void* node_addr_size = blkalloc();
+			// 如果获取不到新的节点地址，则尝试申请更多页
+			if (!node_addr_addr || !node_addr_size) {
+				initpage(kalloc());
+				node_addr_addr = blkalloc();
+				node_addr_size = blkalloc();
+				// 如果获取不到新的页，则分配失败
+				if (!node_addr_addr || !node_addr_size) {
+					release(&treelock);
+					return 0;
+				}
+			}
+			void* ret = OFFTOADDR(nd->addr) + nd->size;
+			Rbnode* newNode_addr = init_node(&tree_addr, node_addr_addr, ret, nbytes, 0);
+			Rbnode* newNode_size = init_node(&tree_size, node_addr_size, ret, nbytes, 0);
+			insert_node(&tree_addr, newNode_addr);
+			insert_node(&tree_size, newNode_size);
+			release(&treelock);
+			return ret;
+		}
+		// 如果申请的空间正好等于当前块大小，则将对应节点is_free设置为0
+		if (nd->size == nbytes) {
+			nd->is_free = 0;
+			find_node(&tree_addr, tree_addr.root, nd)->is_free = 0;
+			void* ret = OFFTOADDR(nd->addr);
+			release(&treelock);
+			return ret;
+		}
+	}
+	// 理论上不执行
+	return 0;
+}
+
+#elif MODE == 4
+// 最坏适应
+void*
+khalloc(uint nbytes)
+{
+	if (nbytes == 0) return 0;
+	acquire(&treelock);
+	Rbnode* max = getmax(&tree_size, tree_size.root);
+	for (Rbnode* nd = max;; nd = step_back(&tree_size, nd)) {
+		// 如果当前节点为nil，说明没有可分配的块，分配失败
+		if (nd == tree_size.nil) {
+			release(&treelock);
+			return 0;
+		}
+		if (!nd->is_free) continue;
+		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
+		if (nd->size > nbytes) {
+			nd = remove_node(&tree_size, nd);
+			nd->size -= nbytes;
+
+			insert_node(&tree_size, nd);
+			find_node(&tree_addr, tree_addr.root, nd)->size -= nbytes;
+
+			// 插入新增的已分配块节点
+			void* node_addr_addr = blkalloc();
+			void* node_addr_size = blkalloc();
+			// 如果获取不到新的节点地址，则尝试申请更多页
+			if (!node_addr_addr || !node_addr_size) {
+				initpage(kalloc());
+				node_addr_addr = blkalloc();
+				node_addr_size = blkalloc();
+				// 如果获取不到新的页，则分配失败
+				if (!node_addr_addr || !node_addr_size) {
+					release(&treelock);
+					return 0;
+				}
+			}
+			void* ret = OFFTOADDR(nd->addr) + nd->size;
+			Rbnode* newNode_addr = init_node(&tree_addr, node_addr_addr, ret, nbytes, 0);
+			Rbnode* newNode_size = init_node(&tree_size, node_addr_size, ret, nbytes, 0);
+			insert_node(&tree_addr, newNode_addr);
+			insert_node(&tree_size, newNode_size);
+			release(&treelock);
+			return ret;
+		}
+		// 如果申请的空间正好等于当前块大小，则将对应节点is_free设置为0
+		if (nd->size == nbytes) {
+			nd->is_free = 0;
+			find_node(&tree_addr, tree_addr.root, nd)->is_free = 0;
 			void* ret = OFFTOADDR(nd->addr);
 			release(&treelock);
 			return ret;
@@ -296,7 +482,6 @@ khfree(void* pa)
 		release(&treelock);
 		panic("khfree");
 	}
-	rmNode->is_free = 1;
 	// 检查前后节点能否合并
 	Rbnode* prev = step_back(&tree_addr, rmNode);
 	Rbnode* next = step(&tree_addr, rmNode);
@@ -304,9 +489,11 @@ khfree(void* pa)
 	int integrate_prev = 0;
 	Rbnode* rmnd_size = find_node(&tree_size, tree_size.root, rmNode);
 	Rbnode* pvnd_size = find_node(&tree_size, tree_size.root, prev);
+	rmNode->is_free = 1;
+	rmnd_size->is_free = 1;
 	// 后节点能合并
 	if (next != tree_addr.nil && rmNode->addr + rmNode->size == next->addr && next->is_free) {
-		remove_node(&tree_size, rmnd_size);
+		rmnd_size = remove_node(&tree_size, rmnd_size);
 		blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, next)));
 		rmnd_size->size += next->size;
 
@@ -320,10 +507,10 @@ khfree(void* pa)
 		blkfree(remove_node(&tree_addr, rmNode));
 		prev->size += rmNode->size;
 
-		remove_node(&tree_size, pvnd_size);
+		pvnd_size = remove_node(&tree_size, pvnd_size);
 		// 防止重复删除
 		if (!integrate_next) {
-			remove_node(&tree_size, rmnd_size);
+			rmnd_size = remove_node(&tree_size, rmnd_size);
 		}
 		pvnd_size->size += rmnd_size->size;
 		insert_node(&tree_size, pvnd_size);
@@ -347,7 +534,11 @@ void printBlocks()
 	// 	printf("address: %p , size: 0x%x, is free: %s\n", OFFTOADDR(nd->addr), nd->size, nd->is_free ? "true" : "false");
 	// }
 	// release(&treelock);
-	// print_tree(&tree_addr, tree_addr.root);
+	printf("address tree:\n");
+	print_tree(&tree_addr, tree_addr.root);
+	printf("***\n");
+	// printf("size tree:\n");
+	// print_tree(&tree_size, tree_size.root);
 	// printf("***\n");
 }
 

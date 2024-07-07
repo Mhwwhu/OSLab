@@ -13,6 +13,8 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+
+
 struct proc* initproc;
 
 int nextpid = 1;

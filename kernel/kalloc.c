@@ -8,6 +8,7 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+#include "proc.h"
 
 void freerange(void* pa_start, void* pa_end);
 
@@ -69,7 +70,7 @@ void*
 kalloc(void)
 {
 	struct run* r;
-
+	printf("kalloc: pid is %d\n", myproc()->pid);
 	acquire(&kmem.lock);
 	r = kmem.freelist;
 	if (r)

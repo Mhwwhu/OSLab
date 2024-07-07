@@ -34,3 +34,4 @@ Rbnode* getmin(Rbtree* tree, Rbnode* node);
 Rbnode* getmax(Rbtree* tree, Rbnode* node);
 Rbnode* step(Rbtree* tree, Rbnode* node);
 Rbnode* step_back(Rbtree* tree, Rbnode* node);
+void print_tree(Rbtree* tree, Rbnode* node);

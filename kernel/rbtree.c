@@ -31,17 +31,17 @@ void set_parent(Rbtree* tree, Rbnode* node, Rbnode* parent)
 	node->parent = (long)parent - (long)node;
 }
 
-Rbnode* get_left(Rbnode* node)
+Rbnode* get_left(const Rbnode* const node)
 {
 	return (Rbnode*)(node->left + (long)node);
 }
 
-Rbnode* get_right(Rbnode* node)
+Rbnode* get_right(const Rbnode* const node)
 {
 	return (Rbnode*)(node->right + (long)node);
 }
 
-Rbnode* get_parent(Rbnode* node)
+Rbnode* get_parent(const Rbnode* const node)
 {
 	return (Rbnode*)(node->parent + (long)node);
 }
@@ -78,11 +78,11 @@ void insert_fix(Rbtree* tree, Rbnode* newNode)
 		return;
 	}
 
-	// continuous red node
 	int flag = 0;
 	Rbnode* parent = get_parent(newNode);
 	// if is left
 	if (newNode->parent + parent->left == 0) flag |= XL;
+	// continuous red node
 	if (parent->color == RED) {
 		Rbnode* grandparent = get_parent(parent); // parent is not root because it's red
 		Rbnode* patcousin;
@@ -115,6 +115,7 @@ void insert_fix(Rbtree* tree, Rbnode* newNode)
 			grandparent->color = RED;
 			left_rotate(tree, parent);
 			right_rotate(tree, grandparent);
+			print_tree(tree, tree->root);
 		}
 		// RL
 		else {
@@ -142,7 +143,7 @@ void insert_node(Rbtree* tree, Rbnode* newNode)
 			set_right(tree, node, newNode);
 			break;
 		}
-		else if (tree->comp(node, newNode) > 0 && get_right(node) == tree->nil) {
+		else if (tree->comp(node, newNode) > 0 && get_left(node) == tree->nil) {
 			set_left(tree, node, newNode);
 			break;
 		}
@@ -157,11 +158,13 @@ void insert_node(Rbtree* tree, Rbnode* newNode)
 }
 
 // 调用者需要保证rmnode在tree中
+// 如果要继续使用rmnode，则必须用返回值重新对rmnode赋值
 void* remove_node(Rbtree* tree, Rbnode* rmnode)
 {
 	Rbnode* node = rmnode;
 	// 如果待删除节点没有子节点
 	if (get_left(node) == tree->nil && get_right(node) == tree->nil) {
+
 		// 如果是根节点，则将root置空
 		Rbnode* parent = get_parent(node);
 		if (node == tree->root) {
@@ -284,12 +287,14 @@ void* remove_node(Rbtree* tree, Rbnode* rmnode)
 	}
 	// 如果待删除节点有两个子节点，则交换待删除节点和右子树最小节点的值
 	Rbnode* rightmin = getmin(tree, get_right(node));
+	printf("rightmin = %p\n", rightmin);
 	unsigned this_addr = node->addr;
 	unsigned this_size = node->size;
 	int this_isfree = node->is_free;
 	node->addr = rightmin->addr;
 	node->size = rightmin->size;
 	node->is_free = rightmin->is_free;
+	printf("node = %p, addr = %x\n", node, node->addr);
 	rightmin->addr = this_addr;
 	rightmin->size = this_size;
 	rightmin->is_free = this_isfree;
