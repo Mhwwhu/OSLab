@@ -70,7 +70,6 @@ void*
 kalloc(void)
 {
 	struct run* r;
-	printf("kalloc: pid is %d\n", myproc()->pid);
 	acquire(&kmem.lock);
 	r = kmem.freelist;
 	if (r)
