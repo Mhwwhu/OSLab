@@ -122,8 +122,9 @@ printBlocks()
 
 #else
 
-
+extern char etext[];
 extern void print_tree(Rbtree*, Rbnode*);
+extern int check_violation(Rbtree*, Rbnode*);
 
 // 1：首次适应 2：循环首次适应 3：最佳适应 4：最坏适应
 #define MODE 3
@@ -155,7 +156,9 @@ int cmpbysize(void* b1, void* b2)
 	Rbnode* node1 = b1;
 	Rbnode* node2 = b2;
 	if (node1->size < node2->size) return -1;
-	else if (node1->size > node2->size) return 1;
+	if (node1->size > node2->size) return 1;
+	if (node1->addr < node2->addr) return -1;
+	if (node1->addr > node2->addr) return 1;
 	return 0;
 }
 
@@ -224,6 +227,16 @@ khinit()
 	blkinit();
 	init_rbtree(&tree_addr, blkalloc(), blkalloc(), cmpbyaddr);
 	init_rbtree(&tree_size, blkalloc(), blkalloc(), cmpbysize);
+}
+
+void* tryAlloc()
+{
+	void* ret = blkalloc();
+	if (!ret) {
+		initpage(kalloc());
+		ret = blkalloc();
+	}
+	return ret;
 }
 
 // 首次适应
@@ -360,21 +373,30 @@ khalloc(uint nbytes)
 	if (nbytes == 0) return 0;
 	acquire(&treelock);
 	Rbnode* min = getmin(&tree_size, tree_size.root);
-	for (Rbnode* nd = min;; nd = step(&tree_size, nd)) {
+	for (Rbnode* pnd = min;; pnd = step(&tree_size, pnd)) {
 		// 如果当前节点为nil，说明没有可分配的块，分配失败
-		if (nd == tree_size.nil) {
+		if (pnd == tree_size.nil) {
 			release(&treelock);
 			return 0;
 		}
-		if (!nd->is_free) continue;
+		RbnodeView nd = getView(pnd);
+		if (!nd.is_free) continue;
 		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
-		if (nd->size > nbytes) {
-			nd = remove_node(&tree_size, nd);
-			nd->size -= nbytes;
-
-			insert_node(&tree_size, nd);
+		if (nd.size > nbytes) {
+			blkfree(remove_node(&tree_size, pnd));
+			nd.size -= nbytes;
+			void* addr = blkalloc();
+			if (!addr) {
+				initpage(kalloc());
+				addr = blkalloc();
+				if (!addr) {
+					release(&treelock);
+					return 0;
+				}
+			}
+			insert_node(&tree_size, init_node(&tree_size, addr, OFFTOADDR(nd.addr), nd.size, nd.is_free));
 			find_node(&tree_addr, tree_addr.root, nd)->size -= nbytes;
-
+			check_violation(&tree_size, tree_size.root);
 			// 插入新增的已分配块节点
 			void* node_addr_addr = blkalloc();
 			void* node_addr_size = blkalloc();
@@ -384,12 +406,17 @@ khalloc(uint nbytes)
 				node_addr_addr = blkalloc();
 				node_addr_size = blkalloc();
 				// 如果获取不到新的页，则分配失败
-				if (!node_addr_addr || !node_addr_size) {
+				if (!node_addr_addr) {
+					release(&treelock);
+					return 0;
+				}
+				if (!node_addr_size) {
+					blkfree(node_addr_addr);
 					release(&treelock);
 					return 0;
 				}
 			}
-			void* ret = OFFTOADDR(nd->addr) + nd->size;
+			void* ret = OFFTOADDR(nd.addr) + nd.size;
 			Rbnode* newNode_addr = init_node(&tree_addr, node_addr_addr, ret, nbytes, 0);
 			Rbnode* newNode_size = init_node(&tree_size, node_addr_size, ret, nbytes, 0);
 			insert_node(&tree_addr, newNode_addr);
@@ -398,10 +425,10 @@ khalloc(uint nbytes)
 			return ret;
 		}
 		// 如果申请的空间正好等于当前块大小，则将对应节点is_free设置为0
-		if (nd->size == nbytes) {
-			nd->is_free = 0;
+		if (nd.size == nbytes) {
+			nd.is_free = 0;
 			find_node(&tree_addr, tree_addr.root, nd)->is_free = 0;
-			void* ret = OFFTOADDR(nd->addr);
+			void* ret = OFFTOADDR(nd.addr);
 			release(&treelock);
 			return ret;
 		}
@@ -474,52 +501,85 @@ khfree(void* pa)
 {
 	if ((uint64)pa < HEAPSTART || (uint64)pa >= PHYSTOP) panic("khfree");
 	acquire(&treelock);
-	Rbnode objNode;
-	objNode.addr = (uint64)pa - HEAPSTART;
-	Rbnode* rmNode = find_node(&tree_addr, tree_addr.root, &objNode);
+	RbnodeView rmNode;
+	rmNode.addr = (uint64)pa - HEAPSTART;
+	Rbnode* prmNode = find_node(&tree_addr, tree_addr.root, rmNode);
+	rmNode = getView(prmNode);
 	// 保证free的地址一定是分配出去的地址
-	if (rmNode == tree_addr.nil || rmNode->is_free) {
+	if (prmNode == tree_addr.nil || rmNode.is_free) {
 		release(&treelock);
 		panic("khfree");
 	}
 	// 检查前后节点能否合并
-	Rbnode* prev = step_back(&tree_addr, rmNode);
-	Rbnode* next = step(&tree_addr, rmNode);
+	RbnodeView prev = getView(step_back(&tree_addr, prmNode));
+	RbnodeView next = getView(step(&tree_addr, prmNode));
 	int integrate_next = 0;
 	int integrate_prev = 0;
-	Rbnode* rmnd_size = find_node(&tree_size, tree_size.root, rmNode);
-	Rbnode* pvnd_size = find_node(&tree_size, tree_size.root, prev);
-	rmNode->is_free = 1;
-	rmnd_size->is_free = 1;
+	RbnodeView rmnd_size = getView(find_node(&tree_size, tree_size.root, rmNode));
+	RbnodeView pvnd_size = getView(find_node(&tree_size, tree_size.root, prev));
+	((Rbnode*)rmNode.ptr)->is_free = 1;
+	((Rbnode*)rmnd_size.ptr)->is_free = 1;
 	// 后节点能合并
-	if (next != tree_addr.nil && rmNode->addr + rmNode->size == next->addr && next->is_free) {
-		rmnd_size = remove_node(&tree_size, rmnd_size);
+	if (next.ptr != tree_addr.nil && rmNode.addr + rmNode.size == next.addr && next.is_free) {
+		blkfree(remove_node(&tree_size, rmnd_size.ptr));
 		blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, next)));
-		rmnd_size->size += next->size;
+		rmnd_size.size += next.size;
+		printf("#1\n");
+		print_tree(&tree_size, tree_size.root);
+		blkfree(remove_node(&tree_addr, next.ptr));
+		blkfree(remove_node(&tree_addr, rmNode.ptr));
+		rmNode.size += next.size;
 
-		blkfree(remove_node(&tree_addr, next));
-		rmNode->size += next->size;
 
 		integrate_next = 1;
 	}
 	// 前节点能合并
-	if (prev != tree_addr.nil && prev->addr + prev->size == rmNode->addr && prev->is_free) {
-		blkfree(remove_node(&tree_addr, rmNode));
-		prev->size += rmNode->size;
-
-		pvnd_size = remove_node(&tree_size, pvnd_size);
+	if (prev.ptr != tree_addr.nil && prev.addr + prev.size == rmNode.addr && prev.is_free) {
 		// 防止重复删除
 		if (!integrate_next) {
-			rmnd_size = remove_node(&tree_size, rmnd_size);
+			blkfree(remove_node(&tree_size, rmnd_size.ptr));
+			blkfree(remove_node(&tree_addr, rmNode.ptr));
 		}
-		pvnd_size->size += rmnd_size->size;
-		insert_node(&tree_size, pvnd_size);
-		blkfree(rmnd_size);
+		printf("#pvnd_size.ptr = %p\n", pvnd_size.ptr);
+		print_tree(&tree_size, tree_size.root);
+		blkfree(remove_node(&tree_size, pvnd_size.ptr));
+		pvnd_size.size += rmnd_size.size;
 
+		blkfree(remove_node(&tree_addr, prev.ptr));
+		prev.size += rmNode.size;
+
+		void* addr1 = tryAlloc();
+		void* addr2 = tryAlloc();
+		if (!addr1) {
+			release(&treelock);
+			return;
+		}
+		if (!addr2) {
+			blkfree(addr1);
+			release(&treelock);
+			return;
+		}
+		printf("#2\n");
+		print_tree(&tree_size, tree_size.root);
+		insert_node(&tree_size, init_node(&tree_size, addr1, OFFTOADDR(pvnd_size.addr), pvnd_size.size, pvnd_size.is_free));
+		insert_node(&tree_addr, init_node(&tree_addr, addr2, OFFTOADDR(prev.addr), prev.size, prev.is_free));
+		blkfree(rmnd_size.ptr);
 		integrate_prev = 1;
 	}
 	if (integrate_next && !integrate_prev) {
-		insert_node(&tree_size, rmnd_size);
+		void* addr1 = tryAlloc();
+		void* addr2 = tryAlloc();
+		if (!addr1) {
+			release(&treelock);
+			return;
+		}
+		if (!addr2) {
+			blkfree(addr1);
+			release(&treelock);
+			return;
+		}
+		insert_node(&tree_size, init_node(&tree_size, addr1, OFFTOADDR(rmnd_size.addr), rmnd_size.size, rmnd_size.is_free));
+		insert_node(&tree_addr, init_node(&tree_addr, addr2, OFFTOADDR(rmNode.addr), rmNode.size, rmNode.is_free));
 	}
 	release(&treelock);
 }
@@ -534,12 +594,24 @@ void printBlocks()
 	// 	printf("address: %p , size: 0x%x, is free: %s\n", OFFTOADDR(nd->addr), nd->size, nd->is_free ? "true" : "false");
 	// }
 	// release(&treelock);
+
 	printf("address tree:\n");
 	print_tree(&tree_addr, tree_addr.root);
 	printf("***\n");
-	// printf("size tree:\n");
-	// print_tree(&tree_size, tree_size.root);
-	// printf("***\n");
+	printf("size tree:\n");
+	print_tree(&tree_size, tree_size.root);
+	printf("***\n");
+	printf("\n\n");
+	int code;
+	if ((code = check_violation(&tree_addr, tree_addr.root)) < 0) {
+		printf("error code: %d\n", code);
+		panic("rbtree");
+	}
+	printf("\n");
+	if ((code = check_violation(&tree_size, tree_size.root)) < 0) {
+		printf("error code: %d\n", code);
+		panic("rbtree");
+	}
 }
 
 #endif
