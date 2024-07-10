@@ -9,6 +9,7 @@ main(void)
 {
 	void* addrs[SIZE];
 	for (int i = 1; i < SIZE; i++) {
+		printf("try to allocate for %d bytes\n", i);
 		addrs[i] = khalloctest(i);
 	}
 	printf("allocating success\n");

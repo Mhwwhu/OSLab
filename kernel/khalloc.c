@@ -122,6 +122,8 @@ printBlocks()
 
 #else
 
+#define PGHEAD_SIZE (2 * sizeof(struct blockNode) + sizeof(uint))
+
 extern char etext[];
 extern void print_tree(Rbtree*, Rbnode*);
 extern int check_violation(Rbtree*, Rbnode*);
@@ -133,14 +135,27 @@ struct blockNode {
 	struct blockNode* next;
 };
 
-struct {
-	struct spinlock lock;
-	struct blockNode* freelist;
-} blockChain;
-
+static struct blockNode pageChain;
+static struct spinlock pagelock;
 static struct spinlock treelock;
 static Rbtree tree_addr;
 static Rbtree tree_size;
+static int is_initializing;
+
+struct blockNode* page_head(void* pa)
+{
+	return (struct blockNode*)pa;
+}
+
+struct blockNode* page_freelist(void* pa)
+{
+	return (struct blockNode*)pa + 1;
+}
+
+uint* page_allocatedBlocks(void* pa)
+{
+	return (uint*)(pa + 16);
+}
 
 int cmpbyaddr(void* b1, void* b2)
 {
@@ -166,61 +181,87 @@ int cmpbysize(void* b1, void* b2)
 void
 blkfree(void* ba)
 {
+	// printf("free start\n");
 	struct blockNode* nd = (struct blockNode*)ba;
-	acquire(&blockChain.lock);
-	nd->next = blockChain.freelist;
-	blockChain.freelist = nd;
-	release(&blockChain.lock);
-	//如果页已分配，则将分配块的数量减少1，如果页面为空，则释放该页
-	if (*((uint*)PGROUNDDOWN((uint64)ba) + 1) == 0) {
-		(*(uint*)PGROUNDDOWN((uint64)ba))--;
-		if (*(uint*)PGROUNDDOWN((uint64)ba) == 0) {
-			kfree((void*)PGROUNDDOWN((uint64)ba));
-			printf("free page %p\n", PGROUNDDOWN((uint64)ba));
+	void* pa = (void*)PGROUNDDOWN((uint64)ba);
+	if (!is_initializing)
+		acquire(&pagelock);
+
+	nd->next = page_freelist(pa)->next;
+	page_freelist(pa)->next = nd;
+
+	if (!is_initializing) {
+		(*page_allocatedBlocks(pa))--;
+		// 如果为空，且当前不是初始化阶段，则释放该页
+		if (!*page_allocatedBlocks(pa)) {
+			struct blockNode* next = page_head(pa)->next;
+			struct blockNode* p;
+			for (p = &pageChain; p->next != pa; p = p->next);
+			p->next = next;
+			// printf("free\n");
+			kfree(pa);
 		}
+		release(&pagelock);
 	}
+	// printf("free end\n");
+}
+
+int
+initpage(void* page_start)
+{
+	if (page_start == 0) return 0;
+	acquire(&pagelock);
+	is_initializing = 1;
+	// 首节点存放下一个页的指针,当前页内block的freelist和已分配块的数量
+	page_head(page_start)->next = pageChain.next;
+	pageChain.next = page_head(page_start);
+	page_freelist(page_start)->next = 0l;
+	*page_allocatedBlocks(page_start) = 0;
+	char* p;
+	for (p = page_start + PGHEAD_SIZE; p + sizeof(Rbnode) - (char*)page_start <= PGSIZE; p += sizeof(Rbnode))
+		blkfree(p);
+	is_initializing = 0;
+	release(&pagelock);
+	return 1;
 }
 
 void*
 blkalloc()
 {
+	// printf("alloc start\n");
 	struct blockNode* node;
-	acquire(&blockChain.lock);
-	node = blockChain.freelist;
-	if (node)
-	{
-		blockChain.freelist = node->next;
-	}
-	else {
-		release(&blockChain.lock);
-		return 0;
-	}
-	release(&blockChain.lock);
-	(*(uint*)PGROUNDDOWN((uint64)node))++;
-	return (void*)node;
-}
+	acquire(&pagelock);
+	// 如果page的freelist的next字段为0，则意味着该页已没有空余块，需要继续查找
+	void* pa;
+	for (pa = pageChain.next; pa != 0 && page_freelist(pa)->next == 0; pa = page_head(pa)->next);
 
-void
-initpage(void* page_start)
-{
-	if (page_start == 0) return;
-	// 首节点存放页内已分配block的数量和是否为新分配的页
-	*((uint*)page_start) = 0;
-	*(((uint*)page_start) + 1) = 1;
-	char* p;
-	// 将第一个block空出来存放页首节点
-	for (p = page_start + sizeof(Rbnode); p + sizeof(Rbnode) - (char*)page_start <= PGSIZE; p += sizeof(Rbnode))
-		blkfree(p);
-	*(((uint*)page_start) + 1) = 0;
-	printf("page_start = %p, blocks = %d\n", page_start, *((uint*)page_start));
+	// 如果pa为0，则说明找不到可分配的块，此时需要申请新的页
+	if (pa == 0) {
+		// 如果initpage失败，说明当前内存已不够分配更多的页，分配失败
+		release(&pagelock);
+		if (!initpage(kalloc())) return 0;
+		acquire(&pagelock);
+		pa = pageChain.next;
+	}
+
+	// 分配页内的块
+	node = page_freelist(pa)->next;
+	page_freelist(pa)->next = node->next;
+	// printf("next is %p\n", node->next);
+	(*page_allocatedBlocks(pa))++;
+	release(&pagelock);
+	// printf("alloc end\n");
+	return node;
 }
 
 void
 blkinit()
 {
-	initlock(&blockChain.lock, "blockChain");
+	initlock(&pagelock, "pageChain");
 	initlock(&treelock, "treelock");
-	initpage(kalloc());
+	if (!initpage(kalloc())) {
+		panic("blkinit");
+	}
 }
 
 void
@@ -229,16 +270,6 @@ khinit()
 	blkinit();
 	init_rbtree(&tree_addr, blkalloc(), blkalloc(), cmpbyaddr);
 	init_rbtree(&tree_size, blkalloc(), blkalloc(), cmpbysize);
-}
-
-void* tryAlloc()
-{
-	void* ret = blkalloc();
-	if (!ret) {
-		initpage(kalloc());
-		ret = blkalloc();
-	}
-	return ret;
 }
 
 // 首次适应
@@ -389,33 +420,22 @@ khalloc(uint nbytes)
 			nd.size -= nbytes;
 			void* addr = blkalloc();
 			if (!addr) {
-				initpage(kalloc());
-				addr = blkalloc();
-				if (!addr) {
-					release(&treelock);
-					return 0;
-				}
+				release(&treelock);
+				return 0;
 			}
 			insert_node(&tree_size, init_node(&tree_size, addr, OFFTOADDR(nd.addr), nd.size, nd.is_free, RED));
 			find_node(&tree_addr, tree_addr.root, nd)->size -= nbytes;
 			// 插入新增的已分配块节点
 			void* node_addr_addr = blkalloc();
+			if (!node_addr_addr) {
+				release(&treelock);
+				return 0;
+			}
 			void* node_addr_size = blkalloc();
-			// 如果获取不到新的节点地址，则尝试申请更多页
-			if (!node_addr_addr || !node_addr_size) {
-				initpage(kalloc());
-				node_addr_addr = blkalloc();
-				node_addr_size = blkalloc();
-				// 如果获取不到新的页，则分配失败
-				if (!node_addr_addr) {
-					release(&treelock);
-					return 0;
-				}
-				if (!node_addr_size) {
-					blkfree(node_addr_addr);
-					release(&treelock);
-					return 0;
-				}
+			if (!node_addr_size) {
+				blkfree(node_addr_addr);
+				release(&treelock);
+				return 0;
 			}
 			void* ret = OFFTOADDR(nd.addr) + nd.size;
 			Rbnode* newNode_addr = init_node(&tree_addr, node_addr_addr, ret, nbytes, 0, RED);
@@ -509,15 +529,8 @@ khfree(void* pa)
 	// 保证free的地址一定是分配出去的地址
 	if (prmNode == tree_addr.nil || rmNode.is_free) {
 		release(&treelock);
-		printf("%p\n", pa);
 		panic("khfree");
 	}
-	// if (pa == (void*)0x87fff604l) {
-	// 	printf("addr tree:\n");
-	// 	print_tree(&tree_addr, tree_addr.root);
-	// 	printf("addr tree end\n");
-	// }
-	// 检查前后节点能否合并
 	RbnodeView prev = getView(step_back(&tree_addr, prmNode));
 	RbnodeView next = getView(step(&tree_addr, prmNode));
 	int integrate_next = 0;
@@ -528,7 +541,6 @@ khfree(void* pa)
 	((Rbnode*)rmnd_size.ptr)->is_free = 1;
 	// 后节点能合并
 	if (next.ptr != tree_addr.nil && rmNode.addr + rmNode.size == next.addr && next.is_free) {
-		printf("integrate_next\n");
 		blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, rmnd_size)));
 		blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, next)));
 		rmnd_size.size += next.size;
@@ -546,34 +558,16 @@ khfree(void* pa)
 			blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, rmnd_size)));
 			blkfree(remove_node(&tree_addr, find_node(&tree_addr, tree_addr.root, rmNode)));
 		}
-		// if (pa == (void*)0x87fff604l) {
-		// 	printf("addr tree:\n");
-		// 	print_tree(&tree_addr, tree_addr.root);
-		// 	printf("addr tree end\n\n\n");
-		// }
+
 		blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, pvnd_size)));
 		pvnd_size.size += rmnd_size.size;
 
 		blkfree(remove_node(&tree_addr, find_node(&tree_addr, tree_addr.root, prev)));
 		prev.size += rmNode.size;
-		// if (pa == (void*)0x87fff604l) {
-		// 	printf("addr tree:\n");
-		// 	print_tree(&tree_addr, tree_addr.root);
-		// 	printf("addr tree end\n\n\n");
-		// 	check_violation(&tree_addr, tree_addr.root);
-		// 	check_violation(&tree_size, tree_size.root);
-		// }
 
 
-		void* addr1 = tryAlloc();
-		if (pa == (void*)0x87fff604l) {
-			printf("addr1 = %p\n", addr1);
-			printf("nodes = %d\n", *((int*)PGROUNDDOWN((uint64)addr1)));
-		}
-		void* addr2 = tryAlloc();
-		if (pa == (void*)0x87fff604l) {
-			printf("##2\n");
-		}
+		void* addr1 = blkalloc();
+		void* addr2 = blkalloc();
 		if (!addr1) {
 			release(&treelock);
 			return;
@@ -583,22 +577,13 @@ khfree(void* pa)
 			release(&treelock);
 			return;
 		}
-		if (pa == (void*)0x87fff604l) {
-			printf("##0\n");
-		}
 		insert_node(&tree_size, init_node(&tree_size, addr1, OFFTOADDR(pvnd_size.addr), pvnd_size.size, 1, RED));
-		if (pa == (void*)0x87fff604l) {
-			printf("##1\n");
-		}
 		insert_node(&tree_addr, init_node(&tree_addr, addr2, OFFTOADDR(prev.addr), prev.size, 1, RED));
 		integrate_prev = 1;
-		if (pa == (void*)0x87fff604l) {
-			printf("##2\n");
-		}
 	}
 	if (integrate_next && !integrate_prev) {
-		void* addr1 = tryAlloc();
-		void* addr2 = tryAlloc();
+		void* addr1 = blkalloc();
+		void* addr2 = blkalloc();
 		if (!addr1) {
 			release(&treelock);
 			return;
