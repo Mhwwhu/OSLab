@@ -182,7 +182,6 @@ int cmpbysize(void* b1, void* b2)
 void
 blkfree(void* ba)
 {
-	// printf("free start\n");
 	struct blockNode* nd = (struct blockNode*)ba;
 	void* pa = (void*)PGROUNDDOWN((uint64)ba);
 	if (!is_initializing)
@@ -199,12 +198,10 @@ blkfree(void* ba)
 			struct blockNode* p;
 			for (p = &pageChain; p->next != pa; p = p->next);
 			p->next = next;
-			// printf("free\n");
 			kfree(pa);
 		}
 		release(&pagelock);
 	}
-	// printf("free end\n");
 }
 
 int
@@ -229,7 +226,6 @@ initpage(void* page_start)
 void*
 blkalloc()
 {
-	// printf("alloc start\n");
 	struct blockNode* node;
 	acquire(&pagelock);
 	// 如果page的freelist的next字段为0，则意味着该页已没有空余块，需要继续查找
@@ -248,10 +244,8 @@ blkalloc()
 	// 分配页内的块
 	node = page_freelist(pa)->next;
 	page_freelist(pa)->next = node->next;
-	// printf("next is %p\n", node->next);
 	(*page_allocatedBlocks(pa))++;
 	release(&pagelock);
-	// printf("alloc end\n");
 	return node;
 }
 
@@ -291,7 +285,6 @@ khalloc(uint nbytes)
 		if (!nd.is_free) continue;
 		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
 		if (nd.size > nbytes) {
-			// printf("alloc: %p\n", nd.addr);
 			blkfree(remove_node(&tree_size, find_node(&tree_size, tree_size.root, nd)));
 			nd.size -= nbytes;
 			if (nd.size > 0) {}
@@ -427,7 +420,6 @@ khalloc(uint nbytes)
 		if (!nd.is_free) continue;
 		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
 		if (nd.size > nbytes) {
-			// printf("alloc: %p\n", nd.addr);
 			blkfree(remove_node(&tree_size, pnd));
 			nd.size -= nbytes;
 			if (nd.size > 0) {}
@@ -490,7 +482,6 @@ khalloc(uint nbytes)
 		if (!nd.is_free) continue;
 		// 如果申请的空间小于当前块大小，则减小块大小，并更新tree_size的结构
 		if (nd.size > nbytes) {
-			// printf("alloc: %p\n", nd.addr);
 			blkfree(remove_node(&tree_size, pnd));
 			nd.size -= nbytes;
 			if (nd.size > 0) {}
@@ -549,9 +540,6 @@ khfree(void* pa)
 	// 保证free的地址一定是分配出去的地址
 	if (prmNode == tree_addr.nil || rmNode.is_free) {
 		release(&treelock);
-		printf("%p\n", pa);
-		printf("is free: %d\n", rmNode.is_free);
-		printf("nil is %p\n", tree_addr.nil);
 		panic("khfree");
 	}
 	RbnodeView prev = getView(step_back(&tree_addr, prmNode));
@@ -645,7 +633,6 @@ void printBlocks()
 		printf("error code: %d\n", code);
 		panic("rbtree");
 	}
-	// printf("\n");
 	if ((code = check_violation(&tree_size, tree_size.root)) < 0) {
 		printf("error code: %d\n", code);
 		panic("rbtree");
