@@ -37,7 +37,7 @@ typedef struct rbnode Rbnode;
 typedef struct rbnode_view RbnodeView;
 
 void init_rbtree(Rbtree* tree, void* init_addr1, void* init_addr2, int(*comp)(void*, void*));
-Rbnode* init_node(Rbtree* tree, void* node_addr, void* start_addr, uint64 size, int is_free);
+Rbnode* init_node(Rbtree* tree, void* node_addr, void* start_addr, uint64 size, int is_free, Color color);
 void insert_node(Rbtree* tree, Rbnode* newNode);
 void* remove_node(Rbtree* tree, Rbnode* rmnode);
 Rbnode* find_node(Rbtree* tree, Rbnode* node, RbnodeView objnode);
