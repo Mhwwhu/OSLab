@@ -138,6 +138,7 @@ UPROGS=\
 	$U/_khalloctest\
 	$U/_khfreetest\
 	$U/_khallocfreetest\
+	$U/_uptime\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
